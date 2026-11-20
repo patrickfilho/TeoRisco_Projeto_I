@@ -1,0 +1,821 @@
+---
+title: "Projeto 1 | O capital definido pelo VaR é suficiente para controlar a ruína?"
+subtitle: "Teoria do Risco — UFRJ - Professora Viviana Lobo"
+author: "Integrantes: PREENCHER"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    theme: flatly
+    self_contained: true
+---
+
+```{r configuracao, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE,
+  error = FALSE
+)
+
+if (!requireNamespace("plotly", quietly = TRUE)) {
+  stop("Instale o pacote plotly antes de gerar o HTML: install.packages('plotly')")
+}
+
+# Formatacao dos valores numericos apresentados no HTML.
+# Os valores monetarios sao expressos em milhares de reais.
+
+fmt_num <- function(x, casas = 2) {
+  formatC(x, format = "f", digits = casas, big.mark = ".", decimal.mark = ",")
+}
+fmt_inteiro <- function(x) {
+  formatC(x, format = "d", big.mark = ".")
+}
+```
+
+# Introdução
+
+O objetivo é investigar se um capital inicial dimensionado por medidas de risco das indenizações anuais é suficiente para evitar a ruína ao longo de um ano.
+
+Para isso, trabalharemos com o modelo clássico de risco em tempo contínuo:
+
+$$
+U(t)=u+ct-S(t),\qquad S(t)=\sum_{i=1}^{N(t)}X_i,\qquad 0\le t\le1.
+$$
+
+As hipóteses estabelecidas pelo enunciado são:
+
+- $N(t)$ é um processo de Poisson com taxa $\lambda=10$ sinistros por ano, em particular, $N(1)\sim\mathrm{Poisson}(10)$.
+- Os valores $X_i$ das indenizações são independentes e identicamente distribuídos segundo $\mathrm{Exponencial}(\text{taxa}=1)$, portanto, $E[X_i]=1$.
+- Os valores das indenizações são independentes do processo de contagem.
+- A taxa anual de arrecadação de prêmios é $c=12$, com carregamento $\theta=0{,}20$. Os prêmios são arrecadados continuamente ao longo do ano.
+- Todos os valores de $U(t)$, $S(t)$, $X_i$ e $c$ estão em milhares de reais (R$ mil).
+
+# Item (a)
+
+Compreender e estimar a distribuição das perdas anuais $S(1)$, seu valor esperado,
+o Value-at-Risk (VaR) de 99% e o Tail-Value-at-Risk (TVaR) de 99%.
+Para isso, simulamos 50.000 anos independentes e comparamos a média
+simulada com o valor teórico $E[S(1)]=10$.
+
+## Simulação
+
+Vamos rodar o seguinte pseudo-código em cada ano hipotético:
+
+1. Sorteamos o número de sinistros $N(1)$ de uma Poisson(10).
+2. Sorteamos exatamente $N(1)$ valores independentes de indenização de uma Exponencial com taxa 1.
+3. Somamos esses valores para obter $S(1)$. **Se $N(1)=0$, definimos $S(1)=0$.**
+4. Repetimos o procedimento 50.000 vezes. Guardamos também os valores individuais, que serão úteis na etapa (c).
+
+```{r simulacao, include=FALSE}
+
+semente <- 2026  
+n_sim <- 50000 # Quantidade de anos simulados
+lambda <- 10 # Numero medio de sinistros por ano
+taxa_exp <- 1 # Parametro RATE da Exponencial
+p <- 0.99 # Nivel de confianca para VaR/TVaR
+c_premio <- 12 # R$ mil/ano (sera usado nas proximas etapas)
+theta <- 0.20 # Carregamento (sera usado nas proximas etapas)
+
+set.seed(semente)
+
+# Simulação dos números de sinistros para cada ano hipotético.
+n_sinistros <- rpois(n = n_sim, lambda = lambda)
+
+# Para o ano j, esta lista guarda os valores das N_j indenizacoes.
+# Ao usar numeric(0), preservamos explicitamente os anos sem sinistro.
+# Guardar a lista tambem evita ter de sortear novamente as indenizacoes
+# quando estudarmos a trajetoria do capital no item (c).
+indenizacoes_por_ano <- lapply(n_sinistros, function(n) {
+  if (n == 0) {
+    numeric(0)
+  } else {
+    rexp(n = n, rate = taxa_exp)
+  }
+})
+
+# A perda anual e a soma das indenizacoes daquele ano.
+# sum(numeric(0)) == 0, como pede o enunciado.
+perdas_anuais <- vapply(indenizacoes_por_ano, sum, numeric(1))
+
+# Valor teorico usado na verificacao: E[S(1)] = E[N(1)] * E[X].
+media_teorica <- lambda / taxa_exp
+media_simulada <- mean(perdas_anuais)
+diferenca_media <- media_simulada - media_teorica
+anos_sem_sinistro <- sum(n_sinistros == 0)
+
+# Frequencia de cada numero de sinistros nos 50.000 anos hipoteticos.
+# Incluimos tambem a categoria zero, mesmo se nao aparecer na simulacao.
+frequencias_n <- table(factor(n_sinistros, levels = 0:max(n_sinistros)))
+tabela_frequencia_sinistros <- data.frame(
+  `Numero de sinistros N(1)` = as.integer(names(frequencias_n)),
+  Frequencia = fmt_inteiro(as.integer(frequencias_n)),
+  check.names = FALSE
+)
+
+# Testes basicos de integridade para prevenir erros silenciosos.
+stopifnot(
+  length(n_sinistros) == n_sim,
+  length(perdas_anuais) == n_sim,
+  all(is.finite(perdas_anuais)),
+  all(perdas_anuais >= 0),
+  all(n_sinistros >= 0),
+  all(vapply(indenizacoes_por_ano, length, integer(1)) == n_sinistros)
+)
+```
+
+## Definição das medidas
+
+O **VaR de 99%** é o menor limiar $v$ tal que pelo menos 99% das perdas anuais
+não o ultrapassam:
+
+$$
+\operatorname{VaR}_{0,99}(S(1))=\inf\{v:\Pr(S(1)\le v)\ge 0{,}99\}.
+$$
+
+O **TVaR de 99%** resume a magnitude média da **cauda superior de 1%**:
+
+$$
+\operatorname{TVaR}_{0,99}(S(1))
+=\frac{1}{0{,}01}\int_{0,99}^1\operatorname{VaR}_{q}(S(1))\,dq.
+$$
+
+Para a amostra de 50.000 simulações, estimamos o VaR pelo quantil empírico
+(`type = 1`) e o TVaR pela fórmula da cauda excedente. Essa forma inclui corretamente eventual parcela dos valores iguais ao VaR que seja necessária para completar o pior 1%.
+
+Para explicitar o cálculo empírico, sejam $s_1,\ldots,s_n$ as perdas anuais
+simuladas, com $n=50.000$, e seja $\widehat v$ o VaR empírico de 99%.
+Definimos $(x)_+=\max(x,0)$. Assim,
+
+$$
+\widehat{TVaR}_{0,99}
+=\widehat v+\frac{1}{n(1-0{,}99)}
+\sum_{j=1}^{n}(s_j-\widehat v)_+.
+$$
+
+Como $n(1-0{,}99)=500$, neste projeto:
+
+$$
+\boxed{\widehat{TVaR}_{0,99}
+=\widehat v+\frac{1}{500}\sum_{j=1}^{50.000}\max(s_j-\widehat v,0).}
+$$
+
+Cada parcela $\max(s_j-\widehat v,0)$ vale zero quando a perda não ultrapassa
+o VaR e, caso contrário, representa o excedente acima desse limiar.
+A função `pmax()` do R calcula esses máximos, observação por observação;
+`mean()` calcula a média dos 50.000 excedentes e a divisão por $0{,}01$
+converte essa média para a cauda superior de 1%.
+
+**Onde está no material:** Slide 5 (*Medidas de Risco e Princípios de Prêmios*),
+slide 25/25, página 26 do PDF, seção "No R: TVaR e CTE". Ali a professora
+apresenta exatamente o cálculo `TVaR <- VaR + mean(pmax(S - VaR, 0)) / (1 - p)`.
+
+Há ainda outra forma de interpretar o resultado. Ordenando as perdas anuais
+como $s_{(1)}\le\cdots\le s_{(50.000)}$, a cauda superior de 1% contém
+500 observações. Por isso, para esta distribuição empírica:
+
+$$
+\widehat{TVaR}_{0,99}
+=\frac{1}{500}\sum_{j=49.501}^{50.000}s_{(j)}.
+$$
+
+Ou seja, o TVaR empírico também é a média dos 500 maiores totais anuais.
+A primeira fórmula trata corretamente eventuais empates no VaR; a segunda
+é uma conferência direta equivalente aqui, pois $1\%$ de 50.000 é um número inteiro.
+
+
+```{r medidas, include=FALSE}
+# VaR empirico: menor valor da amostra cuja funcao de distribuicao
+# empirica acumulada e pelo menos 0.99.
+var99 <- unname(as.numeric(quantile(perdas_anuais, probs = p, type = 1)))
+
+# TVaR empirico definido como media da cauda superior de 1%.
+# pmax(S - VaR, 0) mede quanto cada perda excede o limiar.
+# A formula implementa a integral dos quantis da distribuicao empirica.
+tvar99 <- var99 + mean(pmax(perdas_anuais - var99, 0)) / (1 - p)
+
+# Neste projeto: 1% de 50.000 = 500 observacoes.
+# Fazemos uma segunda conta independente apenas para validar o TVaR:
+# a media dos 500 maiores totais anuais simulados.
+n_piores <- as.integer(round(n_sim * (1 - p)))
+tvar_conferencia <- mean(sort(perdas_anuais, decreasing = TRUE)[seq_len(n_piores)])
+
+# Diagnosticos: a taxa empirica de excedencia do VaR e <= 1%.
+prob_excedencia <- mean(perdas_anuais > var99)
+
+# Verificacoes especificas das medidas.
+stopifnot(
+  tvar99 >= var99,
+  prob_excedencia <= (1 - p) + 1e-10,
+  isTRUE(all.equal(tvar99, tvar_conferencia, tolerance = 1e-9))
+)
+
+# Comparacao detalhada: as casas decimais permitem ver a diferenca
+# mesmo quando ela parece pequena no arredondamento a duas casas.
+tabela_a_medias <- data.frame(
+  `Media teorica (R$ mil)` = fmt_num(media_teorica, 6),
+  `Media simulada (R$ mil)` = fmt_num(media_simulada, 6),
+  `Diferenca: simulada - teorica (R$ mil)` = fmt_num(diferenca_media, 6),
+  check.names = FALSE
+)
+
+# Tabela resumida (duas casas decimais), todos em R$ mil, exceto contagens.
+tabela_a <- data.frame(
+  Indicador = c(
+    "Simulacoes independentes",
+    "Media teorica de S(1)",
+    "Media simulada de S(1)",
+    "VaR de 99%",
+    "TVaR de 99%"
+  ),
+  Resultado = c(
+    fmt_inteiro(n_sim),
+    fmt_num(media_teorica),
+    fmt_num(media_simulada),
+    fmt_num(var99),
+    fmt_num(tvar99)
+  ),
+  check.names = FALSE
+)
+```
+
+## Resultados e verificação da média
+
+A comparação abaixo utiliza seis casas decimais para não esconder a
+diferença entre a média simulada e a esperança teórica:
+
+```{r tabela-medias-precisas}
+knitr::kable(
+  tabela_a_medias,
+  align = c("r", "r", "r"),
+  caption = "Comparação das médias e sua diferença, em R$ mil (seis casas decimais)."
+)
+```
+
+A diferença absoluta foi de `r fmt_num(abs(diferenca_media), 6)` R$ mil,
+o que equivale a aproximadamente `r fmt_num(abs(diferenca_media) / media_teorica * 100, 3)`%
+da média teórica. Nesta execução, a média simulada
+`r if (diferenca_media < 0) "subestimou" else if (diferenca_media > 0) "superestimou" else "coincidiu exatamente com"`
+a média teórica. Essa diferença é esperada em simulações aleatórias e é
+pequena em relação à média de 10 R$ mil.
+
+A seguir, apresentamos as estimativas com duas casas decimais, para uma leitura
+mais direta das medidas anuais:
+
+```{r tabela-item-a}
+knitr::kable(
+  tabela_a,
+  col.names = c("Indicador", "Valor (R$ mil, quando monetário)"),
+  align = c("l", "r"),
+  caption = "Resumo das estimativas das 50.000 simulações (duas casas decimais)."
+)
+```
+
+Os resultados são reproduzíveis ao executar novamente o mesmo código com
+`set.seed(2026)` e as mesmas condições de execução. Outra semente (ou mudança
+na sequência de sorteios) pode produzir médias, VaR e TVaR um pouco diferentes.
+
+## Frequência do número de sinistros por ano
+
+A tabela mostra quantos dos 50.000 anos simulados registraram cada quantidade
+de sinistros. Ela descreve os valores de $N(1)$ utilizados para construir
+`indenizacoes_por_ano` e `perdas_anuais`.
+
+```{r tabela-frequencias-sinistros}
+knitr::kable(
+  tabela_frequencia_sinistros,
+  align = c("r", "r"),
+  caption = "Distribuição empírica da quantidade de sinistros anuais."
+)
+```
+
+Em `r fmt_inteiro(anos_sem_sinistro)` dos 50.000 anos simulados não houve
+sinistros e, portanto, a perda agregada anual foi zero. A frequência de
+perdas estritamente superiores ao VaR foi de
+`r fmt_num(100 * prob_excedencia, 3)`%.
+
+## Distribuição de perdas anuais
+
+O histograma apresenta as 50.000 perdas anuais. As linhas verticais
+indicam o valor **do VaR** e **do TVaR**.
+
+```{r grafico-distribuicao, fig.width=10, fig.height=5.5}
+grafico_a <- plotly::plot_ly(
+  x = perdas_anuais,
+  type = "histogram",
+  nbinsx = 65,
+  marker = list(color = "#5487B9", line = list(color = "#FFFFFF", width = 0.3)),
+  hovertemplate = "Perda anual: %{x:.2f} R$ mil<br>Frequencia: %{y}<extra></extra>",
+  showlegend = FALSE
+)
+
+grafico_a <- plotly::layout(
+  grafico_a,
+  title = list(text = "Distribuicao simulada de S(1) | 50.000 anos"),
+  xaxis = list(title = "Indenizacoes anuais (R$ mil)", zeroline = FALSE),
+  yaxis = list(title = "Quantidade de anos simulados", rangemode = "tozero"),
+  bargap = 0.05,
+  margin = list(t = 85, r = 30, b = 75, l = 70),
+  shapes = list(
+    list(type = "line", xref = "x", yref = "paper", x0 = var99, x1 = var99,
+         y0 = 0, y1 = 1, line = list(color = "#B4554D", width = 2.5, dash = "dash")),
+    list(type = "line", xref = "x", yref = "paper", x0 = tvar99, x1 = tvar99,
+         y0 = 0, y1 = 1, line = list(color = "#21765C", width = 2.5, dash = "dot"))
+  ),
+  annotations = list(
+    list(x = var99, y = 1, xref = "x", yref = "paper", yanchor = "bottom",
+         xanchor = "right", text = "VaR 99%", showarrow = FALSE,
+         font = list(color = "#B4554D", size = 12)),
+    list(x = tvar99, y = 1, xref = "x", yref = "paper", yanchor = "bottom",
+         xanchor = "left", text = "TVaR 99%", showarrow = FALSE,
+         font = list(color = "#21765C", size = 12))
+  )
+)
+
+plotly::config(grafico_a, displaylogo = FALSE, responsive = TRUE)
+```
+
+## Interpretação do item (a)
+
+A média representa o total anual de indenizações esperado sob o modelo, e, em um grande número de simulações independentes, a média amostral tende a se aproximar do valor teórico.
+
+O limiar estimado de **`r fmt_num(var99)` mil reais** para **VaR 99%** não é ultrapassado em pelo menos 99% dos cenários da distribuição empírica.
+
+O valor estimado de **`r fmt_num(tvar99)` mil reais** para **TVaR 99%**
+resume a magnitude média das perdas nos 500 cenários mais severos,
+correspondentes ao 1% superior da distribuição empírica.
+
+Com isso, o TVaR complementa o VaR, pois informa quão graves são os resultados além do limiar.
+
+# Item (b) -- Capitais iniciais pelo VaR e pelo TVaR
+
+Calcular dois capitais iniciais usando as medidas de risco obtidas no item (a).
+A primeira regra usa o VaR de 99%; a segunda usa o TVaR de 99%. Em ambas, a seguradora considera os 12 mil de prêmios que receberá durante o ano, mas esse montante não está disponível integralmente em $t=0$.
+
+As regras exigidas no enunciado são:
+
+$$
+u_{VaR}=\max\{0,VaR_{0,99}(S(1))-12\},
+\qquad
+u_{TVaR}=\max\{0,TVaR_{0,99}(S(1))-12\}.
+$$
+
+A função $\max\{0,\cdot\}$ impede a escolha de capital inicial negativo.
+As contas usam os valores completos, sem arredondamento intermediário;
+os valores exibidos na tabela são arredondados somente para leitura.
+
+```{r capitais-item-b, include=FALSE}
+
+# Reutilizamos var99 e tvar99, calculados com as MESMAS 50.000 perdas anuais
+# do item (a). Os resultados ainda estao em milhares de reais.
+
+u_var <- max(0, var99 - c_premio)
+
+u_tvar <- max(0, tvar99 - c_premio)
+
+diferenca_capitais <- u_tvar - u_var
+
+# O TVaR nao e menor que o VaR, logo seu capital tambem nao pode ser menor.
+stopifnot(u_var >= 0, u_tvar >= 0, u_tvar >= u_var)
+
+tabela_b <- data.frame(
+  Regra = c("VaR 99%", "TVaR 99%"),
+  `Medida de perda (R$ mil)` = c(fmt_num(var99), fmt_num(tvar99)),
+  `Capital inicial (R$ mil)` = c(fmt_num(u_var), fmt_num(u_tvar)),
+  check.names = FALSE
+)
+```
+
+## Resultados
+
+```{r tabela-item-b}
+knitr::kable(
+  tabela_b,
+  align = c("l", "r", "r"),
+  caption = "Item (b): regras de capital inicial baseadas nas perdas anuais."
+)
+```
+
+A regra VaR exige **`r fmt_num(u_var)` R$ mil** no instante inicial.
+A regra TVaR exige **`r fmt_num(u_tvar)` R$ mil**.
+Assim, a segunda regra requer **`r fmt_num(diferenca_capitais)` R$ mil**
+a mais de capital inicial.
+
+O TVaR considera a magnitude média das perdas na cauda superior de 1%, enquanto
+o VaR identifica seu ponto de corte. Como $TVaR\ge VaR$, a regra baseada no
+TVaR exige capital inicial pelo menos tão grande quanto a baseada no VaR.
+Nesta simulação, a diferença entre as regras foi de
+`r fmt_num(diferenca_capitais)` R$ mil.
+
+## Por que subtraímos 12?
+
+Pelo enunciado, a taxa anual de arrecadação de prêmios é
+
+$$
+c=(1+\theta)\lambda E[X]=(1+0{,}20)\times10\times1=12\ \text{mil reais/ano}.
+$$
+
+O capital da seguradora no final do ano é
+
+$$
+U(1)=u+12-S(1).
+$$
+
+Se quisermos que o saldo final seja não negativo em pelo menos 99% dos
+cenários, precisamos de
+
+$$
+\Pr(U(1)\ge0)=\Pr(S(1)\le u+12)\ge0{,}99.
+$$
+
+Assim, basta escolher $u+12\ge VaR_{0,99}(S(1))$, ou seja,
+$u\ge VaR_{0,99}(S(1))-12$. Como não é permitido capital inicial negativo,
+obtemos $u_{VaR}=\max\{0,VaR_{0,99}(S(1))-12\}$. A regra do TVaR
+substitui o VaR pela média da cauda superior de 1%, resultando no segundo
+capital previsto no enunciado.
+
+Entretanto, os 12 representam a arrecadação **ao longo de todo o ano**, e
+não dinheiro disponível imediatamente. No instante inicial,
+$U(0)=u$; até o instante $t$, a seguradora recebeu apenas $12t$.
+Por isso, um capital calculado a partir de $U(1)$ pode não ser suficiente
+para evitar a ruína antes do fim do período. É isso que verificamos no item (c).
+
+# Item (c) -- Probabilidade de ruína ao longo de um ano
+
+Estimar a probabilidade de **ruína em algum instante entre $t=0$ e $t=1$**
+para os capitais calculados no item (b), usando **50.000 trajetórias** do
+processo de capital
+
+$$
+U(t)=u+12t-S(t).
+$$
+
+A ruína ocorre quando algum sinistro leva o saldo abaixo de zero:
+
+$$
+U(T_i)=u+12T_i-\sum_{j=1}^{i}X_j<0.
+$$
+
+Como os prêmios entram continuamente e não há pagamentos de indenização
+entre sinistros, o capital cresce entre os instantes $T_i$. Portanto,
+basta verificar os saldos imediatamente após cada sinistro. Um ano sem
+sinistros não pode apresentar ruína neste modelo se $u\geq0$.
+
+Para comparar as duas regras sem alterar o risco subjácente:
+
+1. Reutilizamos os 50.000 números de sinistros e suas indenizações do item (a).
+2. Sorteamos apenas os instantes dos sinistros. Condicionalmente a
+   $N(1)=n$, os $n$ instantes ordenados de um processo de Poisson
+   homogêneo no intervalo $[0,1]$ podem ser gerados ordenando $n$
+   valores Uniformes(0,1). Os instantes são gerados de modo independente
+   dos valores de indenização.
+3. Para cada trajetória, calculamos o saldo após todos os sinistros, primeiro
+   com $u_{VaR}$ e depois com $u_{TVaR}$. Os mesmos instantes e valores
+   são usados nas duas regras.
+4. Marcamos no máximo uma ocorrência de ruína por trajetória e dividimos o
+   total de trajetórias com ruína por 50.000.
+
+```{r simulacao-tempos-e-ruina, include=FALSE}
+# ITEM (c) - INSTANTES E RUINA -------------------------------------------
+# As indenizacoes_por_ano e n_sinistros JA foram simuladas no item (a).
+# Nao geramos novas indenizacoes nem novos numeros de sinistros aqui.
+# Geramos apenas a coordenada temporal de cada sinistro.
+
+semente_instantes <- 2027
+set.seed(semente_instantes)
+
+# Para cada ano com n sinistros, geramos n instantes em [0,1],
+# depois ordenamos para obter T_1 < ... < T_n. Se n=0, nao ha instantes.
+tempos_por_ano <- lapply(n_sinistros, function(n) {
+  if (n == 0) {
+    numeric(0)
+  } else {
+    sort(runif(n, min = 0, max = 1))
+  }
+})
+
+# Para cada ano j, este vetor guarda:
+# 12*T_i - (X_1 + ... + X_i), isto e, o capital imediatamente apos
+# cada sinistro SE o capital inicial fosse zero.
+# Ao adicionar u_var ou u_tvar obtemos U(T_i) para cada regra.
+saldo_base_por_ano <- lapply(seq_len(n_sim), function(j) {
+  c_premio * tempos_por_ano[[j]] - cumsum(indenizacoes_por_ano[[j]])
+})
+
+# O MENOR saldo (incluindo zero no instante inicial) e suficiente para
+# saber se houve ruina. O saldo pode crescer entre sinistros, mas o
+# minimo nao pode aparecer nesse intervalo de crescimento.
+# Quando nao ha sinistro, a lista de saldos e vazia: retornamos 0.
+menor_saldo_base <- vapply(saldo_base_por_ano, function(saldos) {
+  if (length(saldos) == 0) {
+    0
+  } else {
+    min(0, saldos)
+  }
+}, numeric(1))
+
+# Saldos apos cada sinistro, calculados explicitamente para cada regra.
+# Cada entrada da lista e um vetor com os U(T_i) de um ano hipotetico.
+saldos_var_por_ano <- lapply(saldo_base_por_ano, function(s) u_var + s)
+saldos_tvar_por_ano <- lapply(saldo_base_por_ano, function(s) u_tvar + s)
+
+# TRUE indica que o capital ficou negativo em PELO MENOS UM sinistro.
+# Um vetor vazio (ano sem sinistros) produz FALSE em any(logical(0)).
+ruina_var <- vapply(saldos_var_por_ano, function(s) any(s < 0), logical(1))
+ruina_tvar <- vapply(saldos_tvar_por_ano, function(s) any(s < 0), logical(1))
+
+# Nao contamos quantos sinistros causaram ruina, mas quantos ANOS
+# (trajetorias) apresentaram pelo menos uma ruina.
+qtd_ruinas_var <- sum(ruina_var)
+qtd_ruinas_tvar <- sum(ruina_tvar)
+prob_ruina_var <- mean(ruina_var)
+prob_ruina_tvar <- mean(ruina_tvar)
+
+# Verificacao adicional do enunciado: saldo CALCULADO para t=1.
+# Se a seguradora entrou em ruina antes, o saldo teorico final pode ser
+# positivo mesmo assim: nao estamos modelando aportes nem recuperacao
+# efetiva de uma empresa que faliu; e uma comparacao matematica.
+saldo_final_var <- u_var + c_premio - perdas_anuais
+saldo_final_tvar <- u_tvar + c_premio - perdas_anuais
+
+# Quantos trajetos tiveram ruina em algum instante MAS saldo final >= 0?
+ruina_com_final_nao_negativo_var <- sum(ruina_var & saldo_final_var >= 0)
+ruina_com_final_nao_negativo_tvar <- sum(ruina_tvar & saldo_final_tvar >= 0)
+
+# Probabilidade de saldo final negativo (diferente da prob. de ruina).
+prob_final_negativo_var <- mean(saldo_final_var < 0)
+prob_final_negativo_tvar <- mean(saldo_final_tvar < 0)
+qtd_final_negativo_var <- sum(saldo_final_var < 0)
+qtd_final_negativo_tvar <- sum(saldo_final_tvar < 0)
+
+# Verificacoes da logica da simulacao.
+stopifnot(
+  length(tempos_por_ano) == n_sim,
+  length(saldo_base_por_ano) == n_sim,
+  all(vapply(tempos_por_ano, length, integer(1)) == n_sinistros),
+  all(vapply(tempos_por_ano, function(t) all(t >= 0 & t <= 1), logical(1))),
+  all(is.finite(menor_saldo_base)),
+  length(saldos_var_por_ano) == n_sim,
+  length(saldos_tvar_por_ano) == n_sim,
+  # Duas maneiras equivalentes de identificar ruina (por lista e por minimo).
+  identical(ruina_var, (u_var + menor_saldo_base) < 0),
+  identical(ruina_tvar, (u_tvar + menor_saldo_base) < 0),
+  # Capital maior nao pode gerar ruina quando o menor nao gerou.
+  all(!ruina_tvar | ruina_var),
+  # Se o saldo final e negativo, necessariamente houve ruina antes/ate t=1.
+  all(!(saldo_final_var < 0) | ruina_var),
+  all(!(saldo_final_tvar < 0) | ruina_tvar),
+  qtd_ruinas_var == qtd_final_negativo_var + ruina_com_final_nao_negativo_var,
+  qtd_ruinas_tvar == qtd_final_negativo_tvar + ruina_com_final_nao_negativo_tvar
+)
+
+tabela_c <- data.frame(
+  Regra = c("VaR 99%", "TVaR 99%"),
+  `Capital inicial (R$ mil)` = c(fmt_num(u_var), fmt_num(u_tvar)),
+  `Trajetórias com ruína` = c(fmt_inteiro(qtd_ruinas_var), fmt_inteiro(qtd_ruinas_tvar)),
+  `Prob. de ruína (%)` = c(fmt_num(100 * prob_ruina_var, 3),
+                            fmt_num(100 * prob_ruina_tvar, 3)),
+  check.names = FALSE
+)
+
+# Segunda tabela: evidencia por que U(1) sozinho nao detecta toda ruina.
+tabela_c_saldo_final <- data.frame(
+  Regra = c("VaR 99%", "TVaR 99%"),
+  `Ruínas no ano, mas U(1) >= 0` = c(
+    fmt_inteiro(ruina_com_final_nao_negativo_var),
+    fmt_inteiro(ruina_com_final_nao_negativo_tvar)
+  ),
+  `Anos com U(1) < 0` = c(
+    fmt_inteiro(qtd_final_negativo_var),
+    fmt_inteiro(qtd_final_negativo_tvar)
+  ),
+  `Frequência de U(1) < 0 (%)` = c(
+    fmt_num(100 * prob_final_negativo_var, 3),
+    fmt_num(100 * prob_final_negativo_tvar, 3)
+  ),
+  check.names = FALSE
+)
+```
+
+## Resultados
+
+```{r tabela-item-c}
+knitr::kable(
+  tabela_c,
+  align = c("l", "r", "r", "r"),
+  caption = "Item (c): ruína em pelo menos um instante entre 0 e 1 (50.000 trajetórias)."
+)
+```
+
+A probabilidade estimada de ruína foi **`r fmt_num(100 * prob_ruina_var, 3)`%**
+com capital definido pelo VaR e **`r fmt_num(100 * prob_ruina_tvar, 3)`%**
+com capital definido pelo TVaR. Cada trajetória é contabilizada **uma única vez**,
+mesmo se o saldo ficar negativo em mais de um sinistro.
+
+## Por que o saldo final não é suficiente?
+
+A tabela seguinte compara a ocorrência de ruína **durante** o ano com a
+verificação do saldo apenas em $t=1$.
+
+```{r tabela-saldo-final}
+knitr::kable(
+  tabela_c_saldo_final,
+  align = c("l", "r", "r", "r"),
+  caption = "Item (c): ruína ao longo do ano versus verificação exclusiva do saldo final."
+)
+```
+
+Em `r fmt_inteiro(ruina_com_final_nao_negativo_var)` trajetórias sob o capital
+VaR e `r fmt_inteiro(ruina_com_final_nao_negativo_tvar)` trajetórias sob o capital
+TVaR houve ruína durante o ano, embora o saldo **calculado** em $t=1$
+fosse não negativo. A razão é que parte dos prêmios só é arrecadada
+após o instante em que uma indenização precisa ser paga.
+
+As frequências de saldo final negativo foram
+`r fmt_num(100 * prob_final_negativo_var, 3)`% (VaR) e
+`r fmt_num(100 * prob_final_negativo_tvar, 3)`% (TVaR). Elas não representam
+a probabilidade de ruína durante o ano, porque ignoram quedas anteriores
+do capital abaixo de zero.
+
+## Trajetória ilustrativa do capital
+
+Para ilustrar a ruína e a proteção oferecida pelos capitais, selecionamos
+**dois** dos 50.000 anos simulados: um em que ocorre ruína sob ambas as
+regras e outro em que não ocorre ruína sob nenhuma delas. Cada ano é
+avaliado com os dois capitais, produzindo quatro curvas no mesmo gráfico.
+
+As trajetórias são escolhidas deliberadamente para fins didáticos; elas não
+representam os cenários médios. A estimativa de probabilidade de ruína
+continua usando os 50.000 anos da tabela do item (c).
+
+```{r preparar-trajetorias-exemplo, include=FALSE}
+# Um ano com ruina nas duas regras (ruina_tvar implica ruina_var).
+# Escolhemos o mais proximo do limite de ruina sob TVaR para manter
+# um exemplo informativo, sem usar necessariamente o ano mais extremo.
+anos_ruina_ambos <- which(ruina_tvar)
+# Um ano sem ruina nas duas regras (!ruina_var implica !ruina_tvar).
+anos_sem_ruina_ambos <- which(!ruina_var)
+
+if (length(anos_ruina_ambos) == 0 || length(anos_sem_ruina_ambos) == 0) {
+  stop("A amostra nao contem ambos os tipos de trajetoria para montar o grafico de quatro curvas.")
+}
+
+ano_com_ruina <- anos_ruina_ambos[
+  which.max(u_tvar + menor_saldo_base[anos_ruina_ambos])
+]
+ano_sem_ruina <- anos_sem_ruina_ambos[
+  which.min(u_var + menor_saldo_base[anos_sem_ruina_ambos])
+]
+
+# Para representar as quedas verticais, cada T_i aparece duas vezes:
+# saldo imediatamente antes e imediatamente depois do pagamento.
+montar_trajetoria <- function(u, tempos, indenizacoes) {
+  n <- length(indenizacoes)
+  if (n == 0) {
+    return(data.frame(tempo = c(0, 1), capital = u + c_premio * c(0, 1)))
+  }
+  pagos_acumulados <- cumsum(indenizacoes)
+  pagos_antes <- c(0, head(pagos_acumulados, -1))
+  saldo_antes <- u + c_premio * tempos - pagos_antes
+  saldo_depois <- u + c_premio * tempos - pagos_acumulados
+  data.frame(
+    tempo = c(0, as.vector(rbind(tempos, tempos)), 1),
+    capital = c(u, as.vector(rbind(saldo_antes, saldo_depois)),
+                u + c_premio - sum(indenizacoes))
+  )
+}
+
+trajeto_var_com_ruina <- montar_trajetoria(
+  u_var, tempos_por_ano[[ano_com_ruina]], indenizacoes_por_ano[[ano_com_ruina]]
+)
+trajeto_tvar_com_ruina <- montar_trajetoria(
+  u_tvar, tempos_por_ano[[ano_com_ruina]], indenizacoes_por_ano[[ano_com_ruina]]
+)
+trajeto_var_sem_ruina <- montar_trajetoria(
+  u_var, tempos_por_ano[[ano_sem_ruina]], indenizacoes_por_ano[[ano_sem_ruina]]
+)
+trajeto_tvar_sem_ruina <- montar_trajetoria(
+  u_tvar, tempos_por_ano[[ano_sem_ruina]], indenizacoes_por_ano[[ano_sem_ruina]]
+)
+
+stopifnot(
+  ruina_var[ano_com_ruina], ruina_tvar[ano_com_ruina],
+  !ruina_var[ano_sem_ruina], !ruina_tvar[ano_sem_ruina]
+)
+```
+
+```{r grafico-trajetorias, fig.width=10, fig.height=6.2}
+grafico_c <- plotly::plot_ly()
+
+# Regra VaR: cor vermelha. Solida = com ruina, tracejada = sem ruina.
+grafico_c <- plotly::add_lines(
+  grafico_c, data = trajeto_var_com_ruina, x = ~tempo, y = ~capital,
+  name = paste0("VaR | com ruina (ano ", ano_com_ruina, ")"),
+  line = list(color = "#B4554D", width = 2.5, dash = "solid"),
+  hovertemplate = "Tempo: %{x:.3f} ano<br>Capital: %{y:.2f} R$ mil<extra>VaR | com ruina</extra>"
+)
+grafico_c <- plotly::add_lines(
+  grafico_c, data = trajeto_var_sem_ruina, x = ~tempo, y = ~capital,
+  name = paste0("VaR | sem ruina (ano ", ano_sem_ruina, ")"),
+  line = list(color = "#B4554D", width = 2.5, dash = "dash"),
+  hovertemplate = "Tempo: %{x:.3f} ano<br>Capital: %{y:.2f} R$ mil<extra>VaR | sem ruina</extra>"
+)
+# Regra TVaR: cor verde. Mesmo criterio de linha (solida/tracejada).
+grafico_c <- plotly::add_lines(
+  grafico_c, data = trajeto_tvar_com_ruina, x = ~tempo, y = ~capital,
+  name = paste0("TVaR | com ruina (ano ", ano_com_ruina, ")"),
+  line = list(color = "#21765C", width = 2.5, dash = "solid"),
+  hovertemplate = "Tempo: %{x:.3f} ano<br>Capital: %{y:.2f} R$ mil<extra>TVaR | com ruina</extra>"
+)
+grafico_c <- plotly::add_lines(
+  grafico_c, data = trajeto_tvar_sem_ruina, x = ~tempo, y = ~capital,
+  name = paste0("TVaR | sem ruina (ano ", ano_sem_ruina, ")"),
+  line = list(color = "#21765C", width = 2.5, dash = "dash"),
+  hovertemplate = "Tempo: %{x:.3f} ano<br>Capital: %{y:.2f} R$ mil<extra>TVaR | sem ruina</extra>"
+)
+
+grafico_c <- plotly::layout(
+  grafico_c,
+  title = list(text = "Capital ao longo do ano | 2 cenarios, 4 curvas"),
+  xaxis = list(title = "Tempo (anos)", range = c(0, 1)),
+  yaxis = list(title = "Capital (R$ mil)", zeroline = FALSE),
+  hovermode = "closest",
+  legend = list(orientation = "h", x = 0, y = -0.21, yanchor = "top"),
+  margin = list(t = 75, r = 30, b = 125, l = 70),
+  shapes = list(
+    list(type = "line", xref = "x", yref = "y", x0 = 0, x1 = 1,
+         y0 = 0, y1 = 0, line = list(color = "#545454", dash = "dash", width = 1.5))
+  )
+)
+plotly::config(grafico_c, displaylogo = FALSE, responsive = TRUE)
+```
+
+O gráfico apresenta o ano `r fmt_inteiro(ano_com_ruina)` (ruína sob ambas as
+regras) e o ano `r fmt_inteiro(ano_sem_ruina)` (sem ruína sob ambas),
+totalizando quatro curvas. A cor indica a regra de capital: vermelho para
+VaR e verde para TVaR. A linha contínua representa o ano com ruína e a
+tracejada, o ano sem ruína. Os trechos crescentes representam o ingresso
+contínuo de prêmios; as quedas verticais representam o pagamento de
+indenizações. A linha horizontal em zero indica o limite para ruína.
+
+# Item (d) -- Comparação e recomendação
+
+Avaliar o ganho de proteção contra ruína em relação ao capital adicional
+exigido pelo TVaR e recomendar uma regra, com base nos resultados do item (c).
+
+## Comparação
+
+```{r conclusoes-item-d, include=FALSE}
+# Diferenca entre probabilidades, expressa em PONTOS PERCENTUAIS.
+reducao_ruina_pp <- 100 * (prob_ruina_var - prob_ruina_tvar)
+trajetorias_protegidas_a_mais <- sum(ruina_var & !ruina_tvar)
+stopifnot(
+  reducao_ruina_pp >= -1e-12,
+  trajetorias_protegidas_a_mais == qtd_ruinas_var - qtd_ruinas_tvar
+)
+```
+
+A tabela do item (c) permite comparar a proteção obtida pelas duas regras.
+O TVaR considera a magnitude média das perdas na cauda superior de 1% e,
+por isso, utiliza um capital inicial pelo menos tão grande quanto o VaR.
+Diante das mesmas trajetórias, esse capital adicional não pode aumentar
+a frequência de ruína.
+
+- Capital adicional exigido pelo TVaR: `r fmt_num(diferenca_capitais)` R$ mil.
+- Probabilidade de ruína com VaR: `r fmt_num(100 * prob_ruina_var, 3)`%.
+- Probabilidade de ruína com TVaR: `r fmt_num(100 * prob_ruina_tvar, 3)`%.
+- Redução absoluta estimada na probabilidade de ruína:
+  `r fmt_num(reducao_ruina_pp, 3)` pontos percentuais.
+- Trajetórias protegidas adicionalmente pelo TVaR:
+  `r fmt_inteiro(trajetorias_protegidas_a_mais)` em 50.000.
+
+## Recomendação
+
+`r if (reducao_ruina_pp > 0) "Se o objetivo principal for reduzir a probabilidade de ruína no horizonte de um ano, os resultados favorecem a regra do TVaR, que apresentou maior proteção nas trajetórias simuladas." else "Nesta simulação, a regra do TVaR não apresentou redução observável da frequência de ruína em comparação à regra do VaR; esse resultado não justifica, por si só, exigir mais capital."`
+
+Por outro lado, o capital adicional exigido pelo TVaR também tem um custo
+econômico potencial. Uma decisão real precisaria considerar o custo de manter
+esse capital disponível, sua liquidez, a remuneração que ele poderia obter
+e seu eventual uso alternativo (custo de oportunidade). Isso não significa
+que a reserva necessariamente fique sem rendimento; significa que existem
+restrições e custos que o enunciado não quantifica. Assim, a recomendação
+é condicionada ao objetivo de proteção contra ruína, não a uma comparação
+completa de custos e benefícios.
+
+O VaR e o TVaR do item (a) resumem **perdas anuais**. Já a ruína depende
+**de quando** essas indenizações ocorrem. Por isso, mesmo que $U(1)\geq0$,
+algum $U(T_i)$ pode ter sido negativo antes do fim do período.
+
+O TVaR exige capital **igual ou maior** que o VaR, mas protege melhor
+contra perdas de grande magnitude. A comparação do projeto quantifica,
+para **o cenário fixo e o período de um ano**, quanta proteção adicional
+foi observada e quanto capital ela exigiu. Não extrapolamos os resultados
+para outros horizontes, distribuições ou carregamentos.
+
+# Referências e transparência
+
+- Lobo, V. G. R. *Teoria do Risco -- Medidas de Risco e Princípios de Prêmios*, 2026.2 (slides sobre VaR, TVaR e estimação empírica).
+- Enunciado do Projeto 1, Teoria do Risco, UFRJ, 2026/2.
+- Kaas, R.; Goovaerts, M.; Dhaene, J.; Denuit, M. *Modern Actuarial Risk Theory: Using R*. 2. ed. Springer, 2008. Capítulo 5, pp. 115--134 (referência sugerida no enunciado).
+- Apoio de IA: ChatGPT (OpenAI), utilizado para esclarecer conceitos e auxiliar na estrutura e documentação do código. A execução, validação, interpretação e apresentação dos resultados são responsabilidade do grupo.

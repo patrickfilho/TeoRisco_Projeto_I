@@ -1,0 +1,286 @@
+---
+title: "Projeto 1 | O capital definido pelo VaR é suficiente para controlar a ruína?"
+subtitle: "Etapa (a) | Medidas de risco para as indenizações anuais"
+author: "Teoria do Risco — UFRJ | Integrantes: preencher"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    theme: flatly
+    self_contained: true
+---
+
+```{r configuracao, include=FALSE}
+# Todas as analises e graficos aparecem no HTML, mas os codigos nao.
+# O arquivo .Rmd permanece sendo o codigo-fonte integral do relatorio.
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE,
+  error = FALSE
+)
+
+# O pacote plotly e necessario para produzir o grafico interativo.
+if (!requireNamespace("plotly", quietly = TRUE)) {
+  stop("Instale o pacote plotly antes de gerar o HTML: install.packages('plotly')")
+}
+
+# Formatacao consistente em portugues. Todos os valores monetarios
+# numericos deste projeto estao em MILHARES de reais.
+fmt_num <- function(x, casas = 2L) {
+  formatC(x, format = "f", digits = casas, big.mark = ".", decimal.mark = ",")
+}
+fmt_inteiro <- function(x) {
+  formatC(x, format = "d", big.mark = ".")
+}
+```
+
+# Introdução e hipóteses do projeto
+
+O projeto investiga se um capital inicial dimensionado por medidas de risco das
+**indenizações anuais** é suficiente para evitar a **ruína ao longo de um ano**.
+Trabalharemos com o modelo clássico de risco em tempo contínuo:
+
+$$
+U(t)=u+ct-S(t),\qquad S(t)=\sum_{i=1}^{N(t)}X_i,\qquad 0\le t\le1.
+$$
+
+As hipóteses do enunciado são:
+
+- **Contagem:** $N(t)$ é um processo de Poisson com taxa $\lambda=10$ sinistros por ano; em particular, $N(1)\sim\mathrm{Poisson}(10)$.
+- **Severidade:** os valores $X_i$ das indenizações são independentes e identicamente distribuídos segundo $\mathrm{Exponencial}(\text{taxa}=1)$; portanto, $E[X_i]=1$.
+- **Independência:** os valores das indenizações são independentes do processo de contagem.
+- **Prêmios:** a taxa anual de arrecadação é $c=12$, com carregamento $\theta=0{,}20$; eles entram **continuamente** ao longo do ano.
+- **Unidades monetárias:** todos os valores de $U(t)$, $S(t)$, $X_i$ e $c$ estão em **milhares de reais (R$ mil)**.
+
+Para o **item (a)**, precisamos apenas modelar $S(1)$; os valores $c$ e $\theta$
+serão utilizados nos itens seguintes. Não calculamos ainda capitais iniciais nem
+probabilidades de ruína.
+
+# Item (a) — Objetivo e metodologia
+
+## Objetivo
+
+**Compreender e estimar a distribuição das perdas anuais** $S(1)$, seu valor esperado,
+o **Value-at-Risk (VaR)** de 99% e o **Tail-Value-at-Risk (TVaR)** de 99%.
+Para isso, simulamos **50.000 anos independentes** e comparamos a média
+simulada com o valor teórico $E[S(1)]=10$.
+
+## Como a simulação funciona
+
+Em cada ano hipotético:
+
+1. Sorteamos o número de sinistros $N(1)$ de uma Poisson(10).
+2. Sorteamos exatamente $N(1)$ valores independentes de indenização de uma Exponencial com taxa 1.
+3. Somamos esses valores para obter $S(1)$. **Se $N(1)=0$, definimos $S(1)=0$.**
+4. Repetimos o procedimento 50.000 vezes. Guardamos também os valores individuais, que serão úteis na etapa (c).
+
+A semente aleatória é fixada para que o resultado seja **reproduzível**.
+
+```{r simulacao, include=FALSE}
+# PARAMETROS FIXADOS NO ENUNCIADO ---------------------------------------
+semente <- 2026L                 # Reprodutibilidade
+n_sim <- 50000L                 # Quantidade de anos simulados
+lambda <- 10                    # Numero medio de sinistros por ano
+taxa_exp <- 1                   # Parametro RATE da Exponencial
+p <- 0.99                      # Nivel de confianca para VaR/TVaR
+c_premio <- 12                 # R$ mil/ano (sera usado nas proximas etapas)
+theta <- 0.20                  # Carregamento (sera usado nas proximas etapas)
+
+set.seed(semente)
+
+# Um N diferente em cada um dos 50.000 anos.
+n_sinistros <- rpois(n = n_sim, lambda = lambda)
+
+# Para o ano j, esta lista guarda os valores das N_j indenizacoes.
+# Ao usar numeric(0), preservamos explicitamente os anos sem sinistro.
+# Guardar a lista tambem evita ter de sortear novamente as indenizacoes
+# quando estudarmos a trajetoria do capital no item (c).
+indenizacoes_por_ano <- lapply(n_sinistros, function(n) {
+  if (n == 0L) {
+    numeric(0)
+  } else {
+    rexp(n = n, rate = taxa_exp)
+  }
+})
+
+# A perda anual e a soma das indenizacoes daquele ano.
+# sum(numeric(0)) == 0, como pede o enunciado.
+perdas_anuais <- vapply(indenizacoes_por_ano, sum, numeric(1))
+
+# Valor teorico usado na verificacao: E[S(1)] = E[N(1)] * E[X].
+media_teorica <- lambda / taxa_exp
+media_simulada <- mean(perdas_anuais)
+diferenca_media <- media_simulada - media_teorica
+anos_sem_sinistro <- sum(n_sinistros == 0L)
+
+# Testes basicos de integridade para prevenir erros silenciosos.
+stopifnot(
+  length(n_sinistros) == n_sim,
+  length(perdas_anuais) == n_sim,
+  all(is.finite(perdas_anuais)),
+  all(perdas_anuais >= 0),
+  all(n_sinistros >= 0),
+  all(vapply(indenizacoes_por_ano, length, integer(1)) == n_sinistros)
+)
+```
+
+## Definição das medidas
+
+O **VaR de 99%** é o menor limiar $v$ tal que pelo menos 99% das perdas anuais
+não o ultrapassam:
+
+$$
+\operatorname{VaR}_{0,99}(S(1))=\inf\{v:\Pr(S(1)\le v)\ge 0{,}99\}.
+$$
+
+O **TVaR de 99%** resume a magnitude média da **cauda superior de 1%**:
+
+$$
+\operatorname{TVaR}_{0,99}(S(1))
+=\frac{1}{0{,}01}\int_{0,99}^1\operatorname{VaR}_{q}(S(1))\,dq.
+$$
+
+Para a amostra de 50.000 simulações, estimamos o VaR pelo quantil empírico
+(`type = 1`), como no material da disciplina, e o TVaR pela fórmula da
+**cauda excedente**. Essa forma inclui corretamente eventual parcela dos valores
+iguais ao VaR que seja necessária para completar o pior 1%.
+
+```{r medidas, include=FALSE}
+# VaR empirico: menor valor da amostra cuja funcao de distribuicao
+# empirica acumulada e pelo menos 0.99.
+var99 <- unname(as.numeric(quantile(perdas_anuais, probs = p, type = 1)))
+
+# TVaR empirico definido como media da cauda superior de 1%.
+# pmax(S - VaR, 0) mede quanto cada perda excede o limiar.
+# A formula implementa a integral dos quantis da distribuicao empirica.
+tvar99 <- var99 + mean(pmax(perdas_anuais - var99, 0)) / (1 - p)
+
+# Neste projeto: 1% de 50.000 = 500 observacoes.
+# Fazemos uma segunda conta independente apenas para validar o TVaR:
+# a media dos 500 maiores totais anuais simulados.
+n_piores <- as.integer(round(n_sim * (1 - p)))
+tvar_conferencia <- mean(sort(perdas_anuais, decreasing = TRUE)[seq_len(n_piores)])
+
+# Diagnosticos: a taxa empirica de excedencia do VaR e <= 1%.
+prob_excedencia <- mean(perdas_anuais > var99)
+
+# Verificacoes especificas das medidas.
+stopifnot(
+  tvar99 >= var99,
+  prob_excedencia <= (1 - p) + 1e-10,
+  isTRUE(all.equal(tvar99, tvar_conferencia, tolerance = 1e-9))
+)
+
+# Tabela de resultados finais do item (a), todos em R$ mil, exceto contagens.
+tabela_a <- data.frame(
+  Indicador = c(
+    "Simulacoes independentes",
+    "Media teorica de S(1)",
+    "Media simulada de S(1)",
+    "VaR de 99%",
+    "TVaR de 99%"
+  ),
+  Resultado = c(
+    fmt_inteiro(n_sim),
+    fmt_num(media_teorica),
+    fmt_num(media_simulada),
+    fmt_num(var99),
+    fmt_num(tvar99)
+  ),
+  check.names = FALSE
+)
+```
+
+## Resultados e verificação
+
+```{r tabela-item-a}
+knitr::kable(
+  tabela_a,
+  col.names = c("Indicador", "Valor (R$ mil, quando monetario)"),
+  align = c("l", "r"),
+  caption = "Estimativas obtidas a partir de 50.000 anos simulados."
+)
+```
+
+A média simulada foi **`r fmt_num(media_simulada)` mil reais**, contra a média
+teórica de **`r fmt_num(media_teorica)` mil reais**. A diferença
+(simulada menos teórica) foi de **`r fmt_num(diferenca_media, 4)` mil reais**.
+Diferenças pequenas são esperadas porque estamos trabalhando com uma amostra aleatória.
+
+Em **`r fmt_inteiro(anos_sem_sinistro)`** das 50.000 repetições, não houve
+sinistros; nesses anos, a perda anual foi registrada como zero. A proporção
+simulada de perdas **estritamente superiores ao VaR** foi de
+**`r fmt_num(100 * prob_excedencia, 3)`%**.
+
+## Gráfico 1 de 2 — Distribuição de perdas anuais
+
+O histograma interativo apresenta as 50.000 perdas anuais. As linhas verticais
+indicam o **limiar de VaR** e o **valor do TVaR**: a segunda linha representa uma
+média da cauda, **não outro percentil**. O usuário pode aproximar a escala e
+inspecionar os valores passando o cursor sobre as barras.
+
+```{r grafico-distribuicao, fig.width=10, fig.height=5.5}
+grafico_a <- plotly::plot_ly(
+  x = perdas_anuais,
+  type = "histogram",
+  nbinsx = 65,
+  marker = list(color = "#5487B9", line = list(color = "#FFFFFF", width = 0.3)),
+  hovertemplate = "Perda anual: %{x:.2f} R$ mil<br>Frequencia: %{y}<extra></extra>",
+  showlegend = FALSE
+)
+
+grafico_a <- plotly::layout(
+  grafico_a,
+  title = list(text = "Distribuicao simulada de S(1) | 50.000 anos"),
+  xaxis = list(title = "Indenizacoes anuais (R$ mil)", zeroline = FALSE),
+  yaxis = list(title = "Quantidade de anos simulados", rangemode = "tozero"),
+  bargap = 0.05,
+  margin = list(t = 85, r = 30, b = 75, l = 70),
+  shapes = list(
+    list(type = "line", xref = "x", yref = "paper", x0 = var99, x1 = var99,
+         y0 = 0, y1 = 1, line = list(color = "#B4554D", width = 2.5, dash = "dash")),
+    list(type = "line", xref = "x", yref = "paper", x0 = tvar99, x1 = tvar99,
+         y0 = 0, y1 = 1, line = list(color = "#21765C", width = 2.5, dash = "dot"))
+  ),
+  annotations = list(
+    list(x = var99, y = 1, xref = "x", yref = "paper", yanchor = "bottom",
+         xanchor = "right", text = "VaR 99%", showarrow = FALSE,
+         font = list(color = "#B4554D", size = 12)),
+    list(x = tvar99, y = 1, xref = "x", yref = "paper", yanchor = "bottom",
+         xanchor = "left", text = "TVaR 99%", showarrow = FALSE,
+         font = list(color = "#21765C", size = 12))
+  )
+)
+
+plotly::config(grafico_a, displaylogo = FALSE, responsive = TRUE)
+```
+
+## Interpretação do item (a)
+
+- **Perda esperada:** a média representa o total anual de indenizações esperado sob o modelo, mas não um teto para as perdas.
+- **VaR 99%:** o limiar estimado de **`r fmt_num(var99)` mil reais** não é ultrapassado em pelo menos 99% dos cenários da distribuição empírica.
+- **TVaR 99%:** o valor estimado de **`r fmt_num(tvar99)` mil reais** resume a magnitude média das perdas nos **500 cenários mais severos**, equivalentes ao pior 1% das simulações.
+- **Diferença:** o TVaR complementa o VaR, pois informa quão graves são os resultados além do limiar.
+
+Esses resultados caracterizam **perdas anuais**. Eles **ainda não** representam
+probabilidades de ruína ao longo do ano. A distinção será investigada no item (c).
+
+---
+
+# Continuidade do relatório
+
+Nas próximas etapas, este mesmo arquivo receberá, abaixo do item (a):
+
+- **Item (b):** dois capitais iniciais derivados do VaR e do TVaR.
+- **Item (c):** simulação dos instantes dos sinistros e verificação da ruína durante o ano para cada capital.
+- **Item (d):** comparação de proteção, custo de capital e recomendação.
+
+O relatório já usa **um dos no máximo dois gráficos** permitidos para a apresentação.
+
+# Referências e transparência
+
+- Lobo, V. G. R. *Teoria do Risco — Medidas de Risco e Princípios de Prêmios*, 2026.2 (slides sobre VaR, TVaR e sua estimação empírica).
+- Enunciado do Projeto 1, Teoria do Risco, UFRJ, 2026/2.
+- Apoio de IA: ChatGPT (OpenAI), utilizado para esclarecer conceitos e auxiliar na estruturação e documentação inicial do código; os resultados devem ser executados, conferidos e interpretados pelo grupo.
